@@ -1,0 +1,586 @@
+---
+title: "Sistemas_Recomendación"
+author: "Sergio Vázquez"
+date: "28/04/2015"
+output: html_document
+---
+
+## Carga de librerias
+
+```{r message=FALSE, warning=FALSE, results=FALSE}
+library(data.table)
+library(plyr)
+library(igraph)
+library(reshape2)
+library(NMF)
+library(ggplot2)
+```
+
+
+## Filtrado colaborativo: películas relacionadas (2 puntos)
+
+Crea una función que, a partir de una película dada, proporcione la lista de las, p.e., 10 películas más _próximas_ a ella. La función tiene que admitir como argumento el título de la película (tal cual aparece en el fichero `u.item`) y devolver un vector con las más próximas.
+Pon un par de ejemplos para comprobar que los resultados tienen sentido.
+
+La función tiene que estar definida de la forma
+
+recomienda.peliculas <- function(titulo, k)
+y devolver un vector de `k` películas afines.
+
+Creamos los conjuntos de datos:
+```{r, message=FALSE, warning=FALSE}
+datos <- fread("dat/ml-100k/u.data", sep = "\t")
+colnames(datos) <- c("user.id","item.id", "rating", "timestamp")
+
+peliculas <- fread("dat/ml-100k/u.item", sep = "|")
+colnames(peliculas) <- c("item.id","movie title","release date","video release date","IMDb URL","unknown","Action","Adventure","Animation","Children's","Comedy","Crime","Documentary","Drama","Fantasy","Film-Noir","Horror","Musical","Mystery","Romance","Sci-Fi","Thriller","War","Western")
+
+generos <- c("unknown","Action","Adventure","Animation","Children's","Comedy","Crime","Documentary","Drama","Fantasy","Film-Noir","Horror","Musical","Mystery","Romance","Sci-Fi","Thriller","War","Western")
+```
+
+Buscamos peliculas afines a una dada. Por ejemplo, elegimos peliculas afines a "Pinocchio (1940)", primero lo hacemos sin realizar la funcion:
+```{r, message=FALSE, warning=FALSE}
+pelicula.afin <- "Pinocchio (1940)"
+peliculaGenero <- as.data.frame(peliculas)
+peliculaGenero <- peliculaGenero[, c(2,6:24)]
+
+# Sacamos la pelicula afin, y todas las que son distintas a esta.
+tmp.0 <- peliculaGenero[peliculaGenero$'movie title' == pelicula.afin,]
+tmp.0 <- tmp.0[2:20]
+tmp.0 <- as.integer(tmp.0) # obtengo el vector
+
+tmp.1 <- peliculaGenero[peliculaGenero$'movie title' != pelicula.afin,]
+tmp.1 <- tmp.1[2:20]
+tmp.1 <- as.matrix(tmp.1)
+
+# aplico las correlaciones entre el vector de la pelicula parametro, y la matriz del resto de peliculas:
+afines <- apply(tmp.1, 1 ,cor, y = tmp.0)
+afines <- afines[order(-abs(afines))]
+afines <- as.matrix(afines)
+colnames(afines) <- "correlacion"
+
+## Seleccion de la lista de peliculas en función de su correlacion:
+
+# seleccionamos las peliculas con mayor correlacion, en este caso, mayor de 0.9:
+afines <- which(afines > 0.9,arr.in=TRUE)
+afines$item.id <- rownames(afines) # creo la columna item.id con los rownames.
+
+# unimos con "peliculas" por item.id, para obtener la lista de peliculas afines:
+afines <- merge(afines, peliculas, by = "item.id")
+afines <- afines$"movie title"
+list(afines)
+
+## Seleccion de la lista de peliculas en función del numero de peliculas afines:
+
+# si quiero obtener las "k" peliculas más afines, ejemplo, k = 10, tendré que buscar de (1:k)
+afines2 <- apply(tmp.1, 1 ,cor, y = tmp.0)
+afines2 <- afines2[order(-abs(afines2))]
+afines2 <- as.data.frame(afines2)
+colnames(afines2) <- "correlacion"
+afines2$item.id <- rownames(afines2)
+afines2 <- as.matrix(afines2[(1:10),])
+
+afines2 <- merge(afines2, peliculas, by = "item.id")
+afines2<- afines2$"movie title"
+list(afines2)
+```
+
+Aplicando lo realizado anteriormente, lo implementamos en una funcion:
+
+```{r}
+recomienda.peliculas <- function(titulo, k){
+  
+peliculaGenero <- as.data.frame(peliculas)
+peliculaGenero <- peliculaGenero[, c(2,6:24)]
+
+# Sacamos la pelicula afin, y todas las que son distintas a esta.
+tmp.0 <- peliculaGenero[peliculaGenero$'movie title' == titulo,]
+tmp.0 <- tmp.0[2:20]
+tmp.0 <- as.integer(tmp.0) # obtengo el vector
+
+tmp.1 <- peliculaGenero[peliculaGenero$'movie title' != titulo,]
+tmp.1 <- tmp.1[2:20]
+tmp.1 <- as.matrix(tmp.1)
+
+# aplico las correlaciones entre el vector de la pelicula parametro, y la matriz del resto de peliculas:
+afines <- apply(tmp.1, 1 ,cor, y = tmp.0)
+afines <- afines[order(-abs(afines))]
+afines <- as.matrix(afines)
+colnames(afines) <- "correlacion"
+
+# "k" peliculas más afines:
+afines <- as.matrix(afines[(1:k),])
+afines$item.id <- rownames(afines)
+afines <- merge(afines, peliculas, by = "item.id")
+afines<- afines$"movie title"
+
+return (afines)
+}
+```
+
+Vemos algunos ejemplos:
+```{r, message=FALSE, warning=FALSE}
+recomienda.peliculas("Pinocchio (1940)", 10)
+
+recomienda.peliculas("Toy Story (1995)", 7)
+```
+
+--------------------------------------------------------------------------
+
+## Filtrado colaborativo: recomendaciones para ti (2 puntos)
+
+Revisa la lista de películas, elige unas cuantas que hayas visto (¿20?) y puntúalas según tu parecer. Luego usa lo aprendido en clase para obtener recomendaciones en función de tus almas gemelas.
+
+Tienes varios parámetros que configurar: 
+
+1. Cuántas películas en común y como mínimo tienes que tener con otro individuo para poder considerarlo un _alma gemela_.
+2. Cuál es el número de almas gemelas (o cuál es la distancia mímima) que quieres tener en cuenta.
+
+Usa ambos parámetros hasta que estés satisfecho con la lista de sugerencias.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+datos <- fread("dat/ml-100k/u.data", sep = "\t")
+colnames(datos) <- c("user.id","item.id", "rating", "timestamp")
+
+# Mis valoraciones son el usuario 999 del fichero "mis.datos", en total he votado 13 peliculas.
+mis.datos <- fread("dat/ml-100k/mis.datos", sep = "\t")
+colnames(mis.datos) <- c("user.id","item.id", "rating", "timestamp")
+
+# Creo el conjunto de peliculas:
+peliculas <- fread("dat/ml-100k/u.item", sep = "|")
+colnames(peliculas) <- c("item.id","movie title","release date","video release date","IMDb URL","unknown","Action","Adventure","Animation","Children's","Comedy","Crime","Documentary","Drama","Fantasy","Film-Noir","Horror","Musical","Mystery","Romance","Sci-Fi","Thriller","War","Western")
+
+# Uno mis valoraciones con el resto
+datos <- rbind(datos, mis.datos)
+```
+
+Busco almas gemelas:
+```{r, message=FALSE, warning=FALSE}
+yo <- 999
+tmp.0 <- datos[datos$user.id == yo,]
+tmp.1 <- datos[datos$user.id != yo,]
+
+tmp <- merge(tmp.0, tmp.1, by = "item.id")
+
+# Obtengo mis almas gemelas en funcion de mis valoraciones:
+almas <- ddply(tmp, .(user.id.y), summarize, n=length(item.id),cos.dist = cor(rating.x, rating.y))
+
+# ordenamos los resultados:
+almas <- almas[order(-abs(almas$cos.dist)),]
+
+# Configuramos el numero de peliculas que como mínimo ha de tener en común:
+# Se configura para que tengan más de 3 peliculas en común:
+almas <- almas[almas$n>3,]
+
+
+# Se configura el numero de almas gemelas, en este caso, lo realizo en función de la distancia mínima. Seran almas gemelas aquellas con una correlacion (distancia minima) mayor de 0.95:
+almas <- almas[almas$cos.dist > 0.95,]
+almas <- na.omit(almas) # eliminamos los valores NA
+mis.almas.gemelas <- data.frame(almas$user.id.y)
+colnames(mis.almas.gemelas) <- "user.id"
+mis.almas.gemelas
+
+# Una vez obtenido el conjunto de almas gemelas, podría ver las recomendaciones que proponen:
+# Obtengo las peliculas que han visto mis almas gemelas:
+recomiendan <- merge(datos, mis.almas.gemelas, by ="user.id")
+
+# Del listado obtenido, elegimos las que tengan un rating = 5:
+recomiendan <- recomiendan[recomiendan$rating == 5]
+
+# Eliminamos peliculas repetidas:
+recomiendan <- ddply(recomiendan, .(item.id), summarize, n=length(item.id))
+
+# Eliminamos de ese listado las peliculas que yo ya he visto:
+recomiendan <- merge(recomiendan, mis.datos, all.x = TRUE)
+recomiendan <- recomiendan[ ,c("item.id","user.id")]
+
+# Pasamos los valores NA a 0;
+recomiendan[is.na(recomiendan)] <- 0
+
+# Seleccionamos el listado definitivo:
+recomiendan <- recomiendan[recomiendan$user.id == 0,]
+
+# Vemos el nombre de las peliculas que me recomiendan:
+recomiendan <- merge(recomiendan, peliculas, by = 'item.id')
+recomiendan <- recomiendan[,'movie title']
+recomiendan
+
+# El resultado mostrado se ajusta bastante bien a mis gustos.
+```
+
+--------------------------------------------------------------------------
+
+## Redes sociales (2 puntos)
+
+Lee [esto](http://kieranhealy.org/blog/archives/2013/06/09/using-metadata-to-find-paul-revere/) y ten en cuenta [esto](https://github.com/kjhealy/revere). Modifica lo que tengas que modificar en el archivo `revere.R` del segundo enlace para analizar el conjunto de datos
+
+    magact96 <- read.delim("http://sna.stanford.edu/sna_R_labs/data/mag_act96.txt", 
+                         na.strings = "na", check.names = FALSE)
+
+Puedes crear un fichero en RMarkDown que muestre tu análisis completo (código, gráficas, algo de texto explicativo de por medio, etc.).
+
+
+```{r,message=FALSE, warning=FALSE}
+magact96 <- read.delim("http://sna.stanford.edu/sna_R_labs/data/mag_act96.txt", 
+                         na.strings = "na", check.names = FALSE, row.names=1)
+
+datos <- magact96[,-(1:3)]
+datos <- as.matrix(datos)
+
+# consideramos que el campo "ID" (es el de row.names) de nuestros datos, se asemejan a personas:
+person.id <- datos %*% t(datos)
+diag(person.id) <- NA # Pasamos a NA los valores propios de cada persona.
+# para el caso de los distintos grupos:
+group.id <- t(datos) %*% datos
+diag(group.id) <- NA
+
+# Preparo los datos para realizar los plot:
+# Primero, realizo la preparacion de datos para los distintos grupos:
+group.g <- graph.adjacency(group.id, weighted=TRUE,
+                           mode="undirected", diag=FALSE)
+
+la <- layout.fruchterman.reingold(group.g)
+e.wt <- get.edge.attribute(group.g, "weight") # configura el grueso de la linea, es un peso
+
+# Realizo el plot de los grupos:
+plot(group.g, layout=la, vertex.size=15,edge.width=e.wt, vertex.label.cex=0.7,vertex.label=V(group.g)$name)
+
+# Puedo obtener un png del plot anterior:
+png(file="group-g.png", width=1000, height=1000, res=150)
+plot(group.g, layout=la, vertex.size=15,edge.width=e.wt, vertex.label.cex=0.7,vertex.label=V(group.g)$name)
+dev.off()
+
+# Despues, realizo la preparacion de datos para las distintas personas (IDs):
+person.g <- graph.adjacency(person.id,mode="undirected",
+                            weighted=NULL, diag=FALSE)
+
+la <- layout.fruchterman.reingold(person.g)
+e.wt <- get.edge.attribute(person.g, "weight")
+
+
+# Realizo el plot para las distintas personas:
+### No muestro este plot por problemas de procesamiento con mi PC:
+
+#   plot(person.g, layout=la, vertex.size=3,edge.width=0.1,
+#         vertex.label=V(person.g)$name)
+
+# Puedo obtener un png del plot anterior:
+png(file="person-g.png", width=2200, height=1700, res=150)
+plot(person.g, layout=la, vertex.size=5,edge.width=0.1,
+     vertex.label=V(person.g)$name)
+dev.off()
+
+
+# Realizo la transpuesta de la matriz de datos para ver si esconde más información que no se ve:
+# hago la transpuesta de los datos:
+datos.t <- t(datos)
+person2.id <- datos %*% t(datos)
+diag(person2.id) <- NA
+person2.g <- graph.adjacency(person2.id, mode="undirected", weighted=TRUE, diag=FALSE)
+la <- layout.fruchterman.reingold(person2.g)
+e.wt <- get.edge.attribute(person2.g, "weight")
+
+# Obtengo el plot para el nuevo conjunto de datos de personas con la transpuesta:
+### No muestro este plot por problemas de procesamiento con mi PC:
+
+#   plot(person2.g, layout=la, vertex.size=15,edge.width=e.wt,
+#        vertex.label=V(person2.g)$name)
+
+# Puedo obtener un png del plot anterior:
+png(file="person2t-g.png", width=2000, height=2000, res=150)
+plot(person2.g, layout=la, vertex.size=5,edge.width=e.wt,
+     vertex.label=V(person2.g)$name)
+dev.off()
+
+### Para este conjunto de datos, al realizar la transpuesta, no veo ninguna información adicional que pueda aportar y que no aporta el plot sin transpuesta.
+
+
+
+# Obtenemos algunas medidas de centralidad:
+
+## Betweenness
+btwn.person <- betweenness(person.g)
+names(btwn.person) <- V(person.g)$name
+ind <- order(-btwn.person)
+btwn.person[ind][1:10]
+
+## Eigenvector
+cent.eig <- evcent(person.g)
+names(cent.eig$vector) <- V(person.g)$name
+
+ind <- order(-cent.eig$vector)
+cent.eig$vector[ind][1:10]
+
+## Otra forma de realizar lo mismo que con eigenvector:
+## Kleinberg authority
+cent.klein <- authority.score(person.g)
+names(cent.klein$vector) <- V(person.g)$name
+ind <- order(-cent.klein$vector)
+cent.klein$vector[ind][1:10]
+
+## Bonacich Power
+cent.bonpow <- bonpow(person.g, exponent=1)
+names(cent.bonpow) <-  V(person.g)$name
+ind <- order(cent.bonpow)
+cent.bonpow[ind][1:10]
+
+ind <- cent.bonpow < -1.35
+col.vec <- rep("")
+
+
+
+# Realizamos un plot de centralidad eigenvector y betweenness:
+lay <- layout.fruchterman.reingold(person.g)
+pr.id <- 200
+par(mfrow=c(1,2))
+plot(bonpow(person.g, exponent=1), betweenness(person.g))
+
+```
+
+--------------------------------------------------------------------------
+
+## Filtrado colaborativo: etiquetas (2 puntos)
+
+Construye una tabla que relaciones usuarios y géneros (es decir, que tenga como filas los usuarios y como columnas los géneros a los que pertenecen las películas que han calificado). Los valores de la matriz serán las puntuaciones medias que los usuarios han dado a las películas del género en cuestión.
+
+A partir de eso crea una función que, dada una película nueva (que nadie ha visto) obtenga una lista de los usuarios a quienes se la recomendarías basada en cuánto les gustan los géneros a los que pertenece la nueva película. Ilústralo con un par de ejemplos.
+
+Nota: esta es una manera de resolver el problema del _cold start_: una película nueva no ha sido calificada por nadie. Sin embargo, habrá a quien le interese más. No queremos que un sistema de recomendación la ignore. 
+
+Otra nota: más abajo se indica cómo crear la matriz que relaciona usuarios con etiquetas.
+
+```{r, message=FALSE, warning=FALSE}
+
+pelis <- read.table("dat/ml-100k/u.data", sep = "\t")
+generos <- read.table("dat/ml-100k/u.item", sep = "|", quote = "")
+
+colnames(pelis) <- c("user", "movieid", "rating", "date")
+
+colnames(generos) <- c("movieid",
+                       "movietitle",
+                       "releasedate",
+                       "videoreleasedate",
+                       "IMDbURL",               
+                       "unknown",
+                       "Action",
+                       "Adventure",
+                       "Animation",
+                       "Children",
+                       "Comedy",
+                       "Crime",
+                       "Documentary",
+                       "Drama",
+                       "Fantasy",
+                       "Film-Noir",  
+                       "Horror",
+                       "Musical",
+                       "Mystery",
+                       "Romance",
+                       "Sci-Fi",
+                       "Thriller",
+                       "War",
+                       "Western")
+
+tmp <- merge(pelis, generos)
+tmp$movietitle <- tmp$releasedate <- tmp$videoreleasedate <- tmp$IMDbURL <- tmp$date <- NULL
+
+tmp <- melt(tmp, id.vars = c("user", "movieid", "rating"))
+tmp <- tmp[tmp$value == 1,]
+
+tmp <- ddply(tmp, .(user, variable), summarize, rating = mean(rating))
+
+tmp <- dcast(tmp, user ~ variable) # obtenemos un data frame con usuarios en filas y en columnas los generos con la media de los rating de cada uno.
+tmp[is.na(tmp)] <- 0 # pasa valores NA a 0
+
+tmp.m <- as.matrix(tmp[,-1])
+rownames(tmp.m) <- tmp[,1]
+tmp.m[is.na(tmp.m)] <- 0 # pasa valores NA a 0
+
+## Primero lo realizamos sin implementarlo en una funcion:
+
+# Creamos una nueva pelicula:
+generos <- c("unknown","Action","Adventure","Animation","Children's","Comedy","Crime","Documentary","Drama","Fantasy","Film-Noir","Horror","Musical","Mystery","Romance","Sci-Fi","Thriller","War","Western")
+
+mi.pelicula <- matrix(nrow = 1, ncol = 19)
+colnames(mi.pelicula) <- generos
+
+# Para este caso seleccionamos una pelicula que es de animacion y para niños:
+mi.pelicula[is.na(mi.pelicula)] <- 0
+mi.pelicula[c(4,5)] <- 4.5
+mi.pelicula <- as.double(mi.pelicula) # obtengo el vector
+
+
+# Realizo correlaciones entre la pelicula que he creado con el resto de usuarios:
+user.afin <- apply(tmp.m, 1 ,cor, y = mi.pelicula)
+user.afin <- user.afin[order(-abs(user.afin))]
+user.afin <- as.data.frame(user.afin)
+colnames(user.afin) <- "correlation"
+user.afin$user.id <- rownames(user.afin)
+
+user.afin <- as.matrix(user.afin[user.afin$correlation > 0.4,])
+
+# Listado definitivo de usuarios a los que le recomiendo la pelicula:
+user.afin <- data.frame(user.afin)
+list(user.afin)
+```
+
+
+Lo implementamos en una funcion:
+```{r, message=FALSE, warning=FALSE}
+
+recomienda.usuarios <- function(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s){
+  
+# Creamos una nueva pelicula:
+generos <- c("unknown","Action","Adventure","Animation","Children's","Comedy","Crime","Documentary","Drama","Fantasy","Film-Noir","Horror","Musical","Mystery","Romance","Sci-Fi","Thriller","War","Western")
+
+mi.pelicula <- c(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s)
+
+# Realizo correlaciones entre la pelicula que he creado con el resto de usuarios:
+user.afin <- apply(tmp.m, 1 ,cor, y = mi.pelicula)
+user.afin <- user.afin[order(-abs(user.afin))]
+user.afin <- as.data.frame(user.afin)
+colnames(user.afin) <- "correlation"
+user.afin$user.id <- rownames(user.afin)
+
+user.afin <- as.matrix(user.afin[user.afin$correlation > 0.4,])
+
+# Listado definitivo de usuarios a los que le recomiendo la pelicula:
+user.afin <- data.frame(user.afin)
+return(list(user.afin))
+}
+```
+
+Vemos algunos ejemplos:
+```{r, message=FALSE, warning=FALSE}
+# Peliculas de animacion y para niños:
+recomienda.usuarios(0,0,0,4.5,4.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+
+# Peliculas de comedia y musical:
+recomienda.usuarios(0,0,0,0,0,4.5,0,0,0,0,0,0,4.5,0,0,0,0,0,0)
+```
+
+
+--------------------------------------------------------------------------
+
+## Descomposiciones matriciales: usuarios y géneros de películas (2 puntos)
+
+La gráfica
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+pelis <- read.table("dat/ml-100k/u.data", sep = "\t")
+generos <- read.table("dat/ml-100k/u.item", sep = "|", quote = "")
+
+colnames(pelis) <- c("user", "movieid", "rating", "date")
+
+colnames(generos) <- c("movieid",
+                       "movietitle",
+                       "releasedate",
+                       "videoreleasedate",
+                       "IMDbURL",               
+                       "unknown",
+                       "Action",
+                       "Adventure",
+                       "Animation",
+                       "Children",
+                       "Comedy",
+                       "Crime",
+                       "Documentary",
+                       "Drama",
+                       "Fantasy",
+                       "Film-Noir",  
+                       "Horror",
+                       "Musical",
+                       "Mystery",
+                       "Romance",
+                       "Sci-Fi",
+                       "Thriller",
+                       "War",
+                       "Western")
+
+tmp <- merge(pelis, generos)
+tmp$movietitle <- tmp$releasedate <- tmp$videoreleasedate <- tmp$IMDbURL <- tmp$date <- NULL
+
+tmp <- melt(tmp, id.vars = c("user", "movieid", "rating"))
+tmp <- tmp[tmp$value == 1,]
+
+tmp <- ddply(tmp, .(user, variable), summarize, rating = mean(rating))
+
+tmp <- dcast(tmp, user ~ variable) # obtenemos un data frame con usuarios en filas y en columnas los generos con la media de los rating de cada uno.
+
+m   <- as.matrix(tmp[,-1])
+rownames(m) <- tmp[,1]
+
+m[is.na(m)] <- 0 # pasa valores NA a 0
+
+res <- nmf(m, 6) # Crea los 6 factores
+
+
+h <- res@fit@H
+#h[h < 0.00001] <- 0
+
+h <- 100 * h / rowSums(h) 
+
+h <- data.frame(h)
+h$factor <- 1:nrow(h)
+h <- melt(h, id.vars = "factor")
+
+ggplot(h, aes(x = variable, y = value)) + geom_bar(stat = "identity") + facet_grid(factor~.)
+
+
+```
+
+muestra el perfil de las _preferencias_ de los usuarios a través de seis factores extraídos de la factorización no negativa de la matriz que relaciona a los usuarios con los géneros de las películas (el código con el que está obtenido puede consultarse en el fichero fuente de este documento; es posible, además, que tengas que ejecutar ese código para poder leer las etiquetas).
+
+
+¿Qué interpretación tienen los factores?
+
+Para este caso, se utilizan un total de 6 factores, que corresponderan con el número de columnas de la matriz U (X~U*V).
+En funcion del numero de factores (columnas de U o filas de V) es posible reducir la dimensionalidad de la matriz.
+
+Según la información vista en "http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.192.3637&rep=rep1&type=pdf", el rango de factorización define el numero de "metagenes" usado para aproximar la matriz objetivo.
+
+En función del número de factores utlizados en la aproximación de la matriz, obtendremos unos resultados diferentes.
+
+Se puede observar en el perfil de preferencias de los usuarios, como en función del número de factores utilizados, cambian las preferencias, así por ejemplo, si utilizamos 6 factores, se puede ver como el género "Documentary" sería el más relevante, en cambio, al usar 2 factores, éste género no aparecería.
+
+NMF incorpora medidas de calidad de los resultados para elegir el mejor número de factores a utilizar. Con la función "nmfEstimateRank", obtendremos varias medidas de calidad para elegir el mejor, como veremos en el siguiente punto.
+
+
+¿Puedes obtener una gráfica similar para descomposiciones con distintos números de factores?
+
+Utilizamos la funcion "nmfEstimateRank", para obtener distintas medidas de calidad que me puedan aproximar el valor más optimo del rango de factorización.
+Realizaremos un plot en el que veamos todas las medidas de calidad:
+
+```{r, message=FALSE, warning=FALSE}
+# Podemos comprobar cual sería el mejor numero de factores a representar:
+res2 <- nmfEstimateRank(m, seq(2,15), method='brunet', nrun=10, seed=123456)
+
+# Elegimos que muestre rangos de factorizacion del 2 al 15. Se elige un valor de nrun=10 por ser un valor óptimo entre calidad y tiempo de procesamiento.
+
+# Obtenemos las distintas medidas de calidad:
+plot(res2)
+
+# Vemos en profundidad la grafica "cophenetic"
+plot(res2, 'cophenetic')
+```
+El coeficiente de correlacion de cophenetic, indicara la dispersion de la matriz, y se basa en el promedio de las matrices de conectividad. Se calcula como la correlación de Pearson de dos matrices de distancia.
+Hay que elegir el rango en el que el coeficiente empieza a decaer.
+En el ejemplo anterior, se puede ver como con 8 factores, el coeficiente cophenetic empieza a decaer.
+
+Para el caso de 8 factores, la grafica de descomposiciones sería:
+
+```{r, message=FALSE, warning=FALSE}
+res <- nmf(m, 8) # Crea los 8 factores
+
+h <- res@fit@H
+
+h <- 100 * h / rowSums(h) 
+
+h <- data.frame(h)
+h$factor <- 1:nrow(h)
+h <- melt(h, id.vars = "factor")
+
+ggplot(h, aes(x = variable, y = value)) + geom_bar(stat = "identity") + facet_grid(factor~.)
+```
+
